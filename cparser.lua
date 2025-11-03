@@ -171,10 +171,12 @@ local function copyOptions(options)
       end
    end
    noptions.dialect = dialect
+   noptions.dialectCpp = options.dialectCpp or dialect:find("%+%+")
    noptions.dialectGnu = dialect:find("^gnu")
    noptions.dialect99 = dialect:find("9[9x]$")
    noptions.dialect11 = dialect:find("1[1x]$")
    noptions.dialectAnsi = not noptions.dialectGnu
+   noptions.dialectAnsi = noptions.dialectAnsi and not noptions.dialectCpp
    noptions.dialectAnsi = noptions.dialectAnsi and not noptions.dialect99
    noptions.dialectAnsi = noptions.dialectAnsi and not noptions.dialect11
    -- return
@@ -485,14 +487,18 @@ end
 
 
 local keywordTable = {
-   ------ Standard keywords
+   ------ Standard C keywords
    "auto", "break", "case", "char", "const", "continue", "default", "do",
    "double", "else", "enum", "extern", "float", "for", "goto", "if", "int",
    "long", "register", "return", "short", "signed", "sizeof", "static", "struct",
    "switch", "typedef", "union", "unsigned", "void", "volatile", "while",
-   ------ Nonstandard or dialect specific keywords do not belong here
-   ------ because the main function of this table is to say which
-   ------ identifiers cannot be variable names.
+}
+
+local cppKeywordTable = {
+   ------ C++ keywords (added to keywordTable when dialectCpp is enabled)
+   "class", "public", "private", "protected", "virtual",
+   "explicit", "friend", "operator", "namespace", "template",
+   "typename", "new", "delete", "this", "mutable",
 }
 
 local punctuatorTable = {
@@ -504,9 +510,20 @@ local punctuatorTable = {
    "#", "##", "...", "@", "\\" -- preprocessor stuff
 }
 
-local keywordHash = {}
-for _,v in ipairs(keywordTable) do
-   keywordHash[v] = true
+-- Keyword hash (populated by setupKeywords)
+local keywordHash = nil
+
+-- Function to setup keywords based on dialect options
+local function setupKeywords(options)
+   keywordHash = {}
+   for _,v in ipairs(keywordTable) do
+      keywordHash[v] = true
+   end
+   if options.dialectCpp then
+      for _,v in ipairs(cppKeywordTable) do
+         keywordHash[v] = true
+      end
+   end
 end
 
 local punctuatorHash = {}
@@ -1253,7 +1270,7 @@ processDirectives = function(options, macros, lines, ...)
          repeat local tok2 = pti()
            tok = tok .. tostring(tok2)
          until tok2==nil or tok2=='>' or isNewline(tok2)
-         tok = tok:gsub('%s>$','>')   -- gcc does this 
+         tok = tok:gsub('%s>$','>')   -- gcc does this
       end
       xassert(isHeaderName(tok), options, n, "malformed header name after #include")
       local ttok = pti()
@@ -1575,6 +1592,7 @@ end
 
 local function cppTokenIterator(options, lines, prefix)
    options = copyOptions(options)
+   setupKeywords(options)
    prefix = prefix or ""
    assert(type(options)=='table')
    assert(type(lines)=='function')
@@ -1623,6 +1641,7 @@ end
 local function cpp(filename, outputfile, options)
    -- handle optional arguments
    options = copyOptions(options)
+   setupKeywords(options)
    outputfile = outputfile or "-"
    assert(type(filename)=='string')
    assert(type(options)=='table')
@@ -1735,7 +1754,7 @@ end
 local function typeIs(ty,tag)
    assert(ty)
    if ty.tag == 'Qualified' then ty = ty.t end
-   return ty.tag == tag
+   return ty.tag == tag and ty
 end
 
 -- This function compares two types. When optional argument <oki> is
@@ -1841,15 +1860,21 @@ local function typeToString(ty, nam)
       return '(' .. nam .. ')'
    end
    local function insertword(word,nam)
-      if nam:find("^[A-Za-z0-9$_%%]") then nam = ' ' .. nam end
+      if nam:find("^[A-Za-z0-9$_&%%~]") or
+	 spaceNeededBetweenTokens(word, nam:sub(1,1)) then
+         nam = ' ' .. nam
+      end
       return word .. nam
    end
    local function makelist(ty,sep)
       local s = ''
       for i=1,#ty do
          if i>1 then s = s .. sep end
-         if ty[i].ellipsis then  s = s .. '...'
-         else s = s .. typeToString(ty[i][1], ty[i][2] or "") end
+         if ty[i].ellipsis then
+	    s = s .. '...'
+         else
+	    s = s .. typeToString(ty[i][1], ty[i][2] or "")
+	 end
          if ty[i].bitfield then
             s = s .. ':' .. tostring(ty[i].bitfield)
          end
@@ -1899,6 +1924,7 @@ local function typeToString(ty, nam)
          else nam = nam .. '(' .. makelist(ty,',') .. ')' end
          if ty.attr then nam = nam .. initstr(ty.attr) end
          if qty then nam = nam .. insertqual(qty,'') end
+	 if ty.constructor or ty.destructor then return nam end
          ty = ty.t
       elseif ty.tag == 'Enum' then
          local s = insertqual(qty, 'enum')
@@ -1913,6 +1939,46 @@ local function typeToString(ty, nam)
             end
          end
          return s .. '}' .. nam
+      elseif ty.tag == 'Struct' or ty.tag == 'Union' then
+         local s = insertqual(qty, ty.kind or string.lower(ty.tag))
+         if ty.attr then s = s .. ' ' .. initstr(ty.attr) end
+         if ty.n then s = s .. ' ' .. ty.n end
+         if ty.bases and #ty.bases > 0 then -- c++ base classes
+            s = s .. ' :'
+            for i, base in ipairs(ty.bases) do
+               if i > 1 then s = s .. ',' end
+               s = s .. ' ' .. base.access
+               if base.virtual then s = s .. ' virtual' end
+               s = s .. ' ' .. (base.type.n or '?')
+            end
+         end
+         s = s .. ' {'
+	 local access = (ty.kind == 'class') and 'private' or 'public'
+	 for i=1,#ty do
+	    local member = ty[i]
+	    if member.access and member.access ~= access then
+	       s = s .. ' ' .. member.access .. ':'
+	       access = member.access
+	    end
+	    local mtype = member[1]
+	    local mstr = typeToString(mtype, member[2] or "")
+	    local ftype = typeIs(mtype, 'Function')
+	    if ftype and ftype.virtual then
+	       mstr = 'virtual ' .. mstr end
+	    s = s .. ' ' .. mstr
+	    if ftype and ftype.pure then
+	       s = s .. ' = ' .. ftype.pure
+	    end
+	    if member.bitfield then
+	       s = s .. ':' .. tostring(member.bitfield) end
+            s = s .. ';'
+         end
+
+         if nam == "%s" or nam == "" then
+            return s .. '}'
+         else
+            return s .. '}' .. nam
+         end
       else
          local s = insertqual(qty, string.lower(ty.tag))
          if ty.attr then s = s .. ' ' .. initstr(ty.attr) end
@@ -1947,6 +2013,9 @@ local function declToString(action)
    if tag == 'TypeDef' or tag == 'Definition' or tag == 'Declaration' then
       local n = (action.sclass == '[typetag]') and "" or action.name
       local s = typeToString(action.type, n)
+      if action.type.virtual then
+         s = 'virtual' .. ' ' .. s
+      end
       if action.type.inline then
          s = 'inline' .. ' ' .. s
       end
@@ -2132,6 +2201,15 @@ local function getSpecifierTable(options)
       _Alignas      = options.dialect11 and "attr",
       _Noreturn     = options.dialect11 and "attr",
       _Thread_local = options.dialect11 and "attr",
+      -- C++ keywords
+      class         = options.dialectCpp and 'struct',   -- treat like struct
+      public        = options.dialectCpp and 'access',   -- access specifier
+      private       = options.dialectCpp and 'access',   -- access specifier
+      protected     = options.dialectCpp and 'access',   -- access specifier
+      virtual       = options.dialectCpp and 'virtual',  -- virtual inheritance/functions
+      explicit      = options.dialectCpp and 'explicit', -- explicit constructors
+      friend        = options.dialectCpp and 'friend',   -- friend declarations
+      operator      = options.dialectCpp and 'operator', -- operator overloading
    }
    return options.specifierTable
 end
@@ -2185,13 +2263,16 @@ local function parseDeclarations(options, globals, tokens, ...)
    end
 
    -- check that current token is one of the provided token strings
-   local function check(s1,s2)
+   local function check(s1,s2,s3)
       if tok == s1 then return end
       if tok == s2 then return end
+      if tok == s3 then return end
       if not s2 then
          xerror(options,n,"expecting '%s' but got '%s'", s1, tok)
-      else
+      elseif not s3 then
          xerror(options,n,"expecting '%s' or '%s' but got '%s'", s1, s2, tok)
+      else
+         xerror(options,n,"expecting '%s', '%s', or '%s' but got '%s'", s1, s2, s3, tok)
       end
    end
 
@@ -2243,11 +2324,15 @@ local function parseDeclarations(options, globals, tokens, ...)
    local function processDeclaration(where, symtable, context, name, ty, sclass, init)
       local dcl
       -- handle type definitions
+      local sname = nil
+      if options.dialectCpp and sclass == '[typetag]' then
+	 sname=name name=ty.n end
       if sclass == 'typedef' or sclass == '[typetag]' then
          local nty = namedType(symtable, name)
          nty._def = ty
-         symtable[name] = nty
-         dcl = TypeDef{name=name,type=ty,where=where,sclass=sclass}
+	 symtable[name]=nty
+	 if sname then symtable[sname]=nty end
+         dcl = TypeDef{name=name,sname=sname,type=ty,where=where,sclass=sclass}
          if context == 'global' then coroutine.yield(dcl) end
          return
       end
@@ -2280,10 +2365,27 @@ local function parseDeclarations(options, globals, tokens, ...)
       if dcl.tag ~= 'TypeDef' then
          local odcl = symtable[name]
          local samescope = rawget(symtable, name)
+	 -- deal with overloads
+	 local dcltable = symtable
+	 local dclindex = name
+	 local function searchOverload(ovloads)
+	    for i = 1, #ovloads do
+	       if compareTypes(dcl.type, ovloads[i].type, true) then
+		  return ovloads[i], ovloads, i end end
+	    return nil, ovloads, 1+#ovloads end
+	 if options.dialectCpp and odcl and samescope then
+	    if typeIs(dcl.type,'Function') and odcl.tag ~= 'Pair' then
+	       odcl = Pair{odcl} symtable[name] = odcl end
+	    if typeIs(dcl.type,'Function') then
+	       odcl, dcltable, dclindex = searchOverload(odcl)
+	    elseif odcl.tag == 'Pair' then
+	       odcl, dcltable, dclindex = odcl[1], odcl, 1 -- for error
+	    end
+	 end
          -- compare types
          if odcl and samescope then
             if dcl.tag == 'Definition' and odcl.tag == 'Definition'
-            or not compareTypes(dcl.type,odcl.type,true) then
+            or not compareTypes(dcl.type, odcl.type, true) then
                xerror(options,where,
                       "%s of symbol '%s' conflicts with earlier %s at %s",
                       string.lower(dcl.tag), name,
@@ -2304,8 +2406,9 @@ local function parseDeclarations(options, globals, tokens, ...)
             end
          end
          -- install dcl in symtable and yield global declarations
-         symtable[name] = ddcl
-         if context == 'global' then coroutine.yield(dcl) end
+	 dcltable[dclindex] = ddcl
+         if context == 'global' then
+	    coroutine.yield(dcl) end
       end
    end
 
@@ -2376,7 +2479,7 @@ local function parseDeclarations(options, globals, tokens, ...)
          if p == 'size' and ltok == 'long' and nn[p] == 'long' then
             nn[p] = 'long long'
          elseif p == 'attr' then
-            -- nothing
+            -- nothing (attr collected separately by collectAttributes)
       elseif p=='type' and nn[p] then
             xerror(options,n,"conflicting types '%s' and '%s'", nn[p], ltok)
          elseif nn[p] then
@@ -2563,6 +2666,12 @@ local function parseDeclarations(options, globals, tokens, ...)
          xassert(tt, options, where, "only functions can be declared inline")
          tt.inline = true
       end
+      if extra.virtual then
+         local tt = ty
+         while tt and tt.tag ~= 'Function' do tt=tt.t end
+         xassert(tt, options, where, "only functions can be declared virtual")
+         tt.virtual = true
+      end
       attr = tableAppend(extra.attr, attr)
       if attr then
          local tt = ty
@@ -2649,32 +2758,86 @@ local function parseDeclarations(options, globals, tokens, ...)
             end
          end
       end
-      if i == 0 then ty.withoutProto = true end
+      if i == 0 and not options.dialectCpp then
+	 ty.withoutProto = true end
       return ty
    end
 
    parseStruct = function(symtable, context, abstract_, nn)
-      check('struct', 'union')
+      check('struct', 'union', 'class')
       local kind = tok ; ti()
       nn.attr = collectAttributes(nn.attr)
       local ttag, tnam
       if isName(tok) then ttag=tok; tnam=kind..' '..ttag; nn.newtype=true; ti() end
       nn.attr = collectAttributes(nn.attr)
-      if ttag and tok ~= '{' then return namedType(symtable, tnam) end
+      -- Forward declaration check (but allow ':' for C++ inheritance)
+      if ttag and tok ~= '{' and tok ~= ':' then return namedType(symtable, tnam) end
       -- parse real struct definition
       local ty
-      if kind == 'struct' then ty = Struct{n=ttag} else ty = Union{n=ttag} end
+      if kind == 'struct' or kind == 'class' then
+         ty = Struct{n=ttag, kind=kind}
+      else
+         ty = Union{n=ttag}
+      end
       local where = n
+      local access = nil
+      if options.dialectCpp then
+	 local nty = namedType(symtable, ty.n)
+	 nty._def = ty
+	 access = (kind == 'class') and 'private' or 'public'
+	 if tok == ':' then -- c++ inheritance
+	    tok = ','
+	    ty.bases = Pair{}
+	    while tok == ',' do
+	       ti()
+	       local base = {access=access}
+	       if tok == 'public' or tok == 'private' or tok == 'protected' then
+		  base.access = tok
+		  ti()
+	       end
+	       if tok == 'virtual' then
+		  base.virtual = true
+		  ti()
+	       end
+	       xassert(isName(tok), options, n, "base class name expected")
+	       base.type = namedType(symtable, tok)
+	       ti()
+	       ty.bases[#ty.bases + 1] = base
+	    end
+	 end
+      end
       check('{') ti()
       while tok and tok ~= '}' do
          where = n
-         local lty, lextra = parseDeclarationSpecifiers(symtable, context)
-         xassert(lextra.sclass == nil, options, where,
-                 "storage class '%s' is not allowed here", lextra.sclass)
+         while options.dialectCpp and specifierTable[tok] == 'access' do
+            access = tok
+	    ti() check(':') ti()
+         end
+         if tok == '}' then break end
+         -- Parse declaration specifiers
+         local lty, lextra
+	 lextra = {}
+         if options.dialectCpp and tok == 'virtual' and ti(1) == '~' then
+	    ti() lextra.virtual=true end
+	 if options.dialectCpp and tok == '~' then
+	    ti() lextra.destructor=true
+	    lty = namedType(symtable, 'void')
+	    xassert(tok == ttag, options, where, "destructor name must match class name")
+	    xassert(ti(1) == '(', options, where, "destructor must have arguments")
+	 elseif options.dialectCpp and tok == ttag and ti(1) == '(' then
+	    lextra.constructor=true
+	    lty = namedType(symtable, 'void')
+	 else
+            lty, lextra = parseDeclarationSpecifiers(symtable, context)
+            xassert(lextra.sclass == nil, options, where,
+                    "storage class '%s' is not allowed here", lextra.sclass)
+	 end
+	 -- Parse declarators
          if tok == ';' then -- anonymous member
             xassert(lty.tag=='Struct' or lty.tag=='Union' ,
                     options, where, "empty declaration")
-            ty[1+#ty] = Pair{lty}
+            local pair = Pair{lty, access=access}
+            ty[1+#ty] = pair
          else
             while true do
                if tok == ':' then ti() -- unnamed bitfield
@@ -2684,13 +2847,35 @@ local function parseDeclarations(options, globals, tokens, ...)
                           "syntax error in bitfield specification")
                   xassert(type(v)~='number' or v>=0, options, where,
                           "invalid anonymous bitfield size (%s)", v)
-                  ty[1+#ty] = Pair{lty,bitfield=v}
+                  local pair = Pair{lty,bitfield=v,access=access}
+                  ty[1+#ty] = pair
                else
                   local pname, pty = parseDeclarator(lty, lextra, symtable, context)
                   if pty.tag == 'Array' and not pty.size then
                      xwarning(options, where, "unsized arrays are not allowed here (ignoring)")
                   elseif pty.tag == 'Function' then
-                     xerror(options, where, "member functions are not allowed in C")
+                     if not options.dialectCpp then
+                        xerror(options, where, "member functions are not allowed in C") end
+		     if tok == '{' then
+                        skipPar({})  -- skip function body
+                        -- Inject a fake semicolon to simplify parsing flow
+                        ti(-1); tok = ';'; n = where
+                     elseif tok == '=' then
+			ti()
+			if tok == '0' or tok == 'default' or tok == 'delete' then
+			   pty.pure=tok ti()
+			else
+			   xerror(options, where, "expected 0, default, or delete after '='")
+			end
+                     end
+		     if lextra.destructor then
+			pname = '~' .. pname
+			pty.destructor = true
+			pty.virtual = lextra.virtual
+		     end
+		     if lextra.constructor then
+			pty.constructor = true
+		     end
                   end
                   if tok == ':' then ti()
                      xassert(lty == pty, options, where, "bitfields must be of integral types")
@@ -2700,9 +2885,9 @@ local function parseDeclarations(options, globals, tokens, ...)
                              "syntax error in bitfield specification")
                      xassert(type(v)~='number' or v>0, options, where,
                              "invalid bitfield size (%s)", v)
-                     ty[1+#ty] = Pair{pty,pname,bitfield=v}
+                     ty[1+#ty] = Pair{pty,pname,bitfield=v,access=access}
                   else
-                     ty[1+#ty] = Pair{pty,pname}
+                     ty[1+#ty] = Pair{pty,pname,access=access}
                   end
                end
                check(',',';')
@@ -2744,6 +2929,10 @@ local function parseDeclarations(options, globals, tokens, ...)
       local ty = Enum{n=ttag}
       local ity = Qualified{t=namedType(globals, "int"),const=true,_enum=ty}
       local where = n
+      if options.dialectCpp then
+	 local nty = namedType(symtable, ty.n)
+	 nty._def = ty
+      end
       check('{') ti()
       repeat
          local nam = tok
@@ -2863,6 +3052,7 @@ end
 
 local function declarationIterator(options, lines, prefix)
    options = copyOptions(options)
+   setupKeywords(options)
    prefix = prefix or ""
    local symbols = initialSymbols(options)
    local macros = initialMacros(options)
@@ -2888,10 +3078,13 @@ end
 
 local function parse(filename, outputfile, options)
    -- handle optional arguments
-   options = options or {}
+   options = copyOptions(options)
    outputfile = outputfile or "-"
    assert(type(filename)=='string')
    assert(type(options)=='table')
+   if filename:find('%.cpp$') or filename:find('%.C$') then
+      options.dialectCpp = true
+   end
    local closeoutputfile = false
    if io.type(outputfile) ~= 'file' then
       assert(type(outputfile) == 'string')
