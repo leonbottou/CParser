@@ -1451,13 +1451,20 @@ local function initialDefines(options)
       sb[1+#sb] = string.format("#endif")
    end
    addDef("__STDC__", "1")
-   local stdc = "199409L"
-   if options.dialect11 then stdc = "201112L" end
-   if options.dialect99 then stdc = "199901L" end
-   addDef("__STDC_VERSION__", stdc)
+   if not options.dialectCpp then
+      local stdc = "199409L"
+      if options.dialect11 then stdc = "201112L" end
+      if options.dialect99 then stdc = "199901L" end
+      addDef("__STDC_VERSION__", stdc)
+   else
+      local cpp = "199711L"
+      if options.dialect11 then cpp = "201103L" end
+      addDef("__cplusplus", cpp)
+   end
    if options.dialectGnu then
       addDef("__GNUC__", 4)
       addDef("__GNUC_MINOR__", 2)
+      if options.dialectCpp then addDef("__GNUG__","1") end
    end
    yieldLines(options, wrap(options, yieldFromArray, sb), "<builtin>")
    -- command line definitions
@@ -1744,10 +1751,10 @@ local Function = newTag('Function')
 
 -- This function creates a qualified variant of a type.
 
-local function addQualifier(ty, q)
-   assert(q=='const' or q=='volatile' or q=='restrict')
+local function addQualifier(ty, q, val)
+   assert(q=='const' or q=='volatile' or q=='restrict' or q=='linkage')
    if ty.Tag ~= 'Qualified' then ty = Qualified{t=ty} end
-   ty[q] = true
+   ty[q] = val or true
    return ty
 end
 
@@ -2321,7 +2328,7 @@ local function parseDeclarations(options, globals, tokens, ...)
    -- Argument <where> is the file/line of the declaration.
    -- Argument <symtable> is the current symbol table.
    -- Argument <context> is 'global', 'param', 'local'
-   local function processDeclaration(where, symtable, context, name, ty, sclass, init)
+   local function processDeclaration(where, symtable, context, name, ty, sclass, init, linkage)
       local dcl
       -- handle type definitions
       local sname = nil
@@ -2360,6 +2367,11 @@ local function parseDeclarations(options, globals, tokens, ...)
             dcl = Definition{name=name,type=ty,sclass=sclass,where=where,init=init,intval=v}
          end
       end
+      -- handle linkage specification
+      if linkage and sclass ~= 'static' and sclass ~= '[enum]' then
+         ty = addQualifier(ty, 'linkage', linkage)
+         dcl.type = ty
+      end
       -- check for duplicate declaration
       local ddcl = dcl
       if dcl.tag ~= 'TypeDef' then
@@ -2373,7 +2385,25 @@ local function parseDeclarations(options, globals, tokens, ...)
 	       if compareTypes(dcl.type, ovloads[i].type, true) then
 		  return ovloads[i], ovloads, i end end
 	    return nil, ovloads, 1+#ovloads end
-	 if options.dialectCpp and odcl and samescope then
+	 -- Helper to check if a type has C linkage
+	 local function hasCLinkage(ty)
+	    return ty and ty.tag == 'Qualified' and ty.linkage == 'C'
+	 end
+	 -- If new declaration has C linkage, error if there's already a Pair (C++ overloads)
+	 if hasCLinkage(dcl.type) and odcl and odcl.tag == 'Pair' then
+	    xerror(options, where,
+		   "cannot add C linkage function '%s' to existing C++ overload set at %s",
+		   name, odcl[1].where)
+	 end
+	 -- If trying to create C++ overload but existing has C linkage, error
+	 if options.dialectCpp and not hasCLinkage(dcl.type) and odcl and samescope
+	    and typeIs(dcl.type,'Function') and hasCLinkage(odcl.type) then
+	    xerror(options, where,
+		   "cannot add C++ overload for '%s' with existing C linkage declaration at %s",
+		   name, odcl.where)
+	 end
+	 -- No overloading if C linkage
+	 if options.dialectCpp and not hasCLinkage(dcl.type) and odcl and samescope then
 	    if typeIs(dcl.type,'Function') and odcl.tag ~= 'Pair' then
 	       odcl = Pair{odcl} symtable[name] = odcl end
 	    if typeIs(dcl.type,'Function') then
@@ -2458,6 +2488,10 @@ local function parseDeclarations(options, globals, tokens, ...)
             p = 'type'; ty = parseEnum(symtable, context, abstract, nn)
          elseif p == 'struct' then
             p = 'type'; ty = parseStruct(symtable, context, abstract, nn)
+         elseif options.dialectCpp and ltok=='extern' and ti(1)=='"C"' then
+            ti(); nn.linkage="C"; ti()
+         elseif options.dialectCpp and p == 'operator' then
+            break
          elseif p then
             ti()
          elseif isName(tok) then
@@ -2549,6 +2583,22 @@ local function parseDeclarations(options, globals, tokens, ...)
       return ty, nn
    end
 
+   -- Helper function to handle C++ operator overloading
+   local function cppOperatorName()
+      ti()
+      local s = tok
+      local err = "syntax error in operator overload"
+      xassert(s=='new' or s=='delete' or isPunctuator(s), options, n, err)
+      xassert(not s:find("^[%]%.%?{})@\\;#]"), options, n, err)
+      ti()
+      if s=='[' then xassert(tok==']', options, n, err) ti() s='[]' end
+      if s=='(' then xassert(tok==')', options, n, err) ti() s='()' end
+      if s=='new' or s=='delete' then s = ' ' .. s end
+      if s:find("^ ") and tok=='[' then ti() xassert(tok==']', options, n, err) ti() s = s..'[]' end
+      xassert(tok=='(', options, n, err)
+      return s
+   end
+
    -- This function parse the right parts and returns the identifier
    -- name, its type, and a storage class. Its arguments are the
    -- outputs of the corresponding <parseDeclarationSpecifier> plus
@@ -2561,7 +2611,10 @@ local function parseDeclarations(options, globals, tokens, ...)
       local name
       local function parseRev()
          local ty = nil
-         if isName(tok) then
+         if options.dialectCpp and tok == 'operator' then
+            xassert(not name, options, n, "unexpected keyword '%s'", tok)
+            name = tok .. cppOperatorName()
+         elseif isName(tok) then
             xassert(not name, options, n, "extraneous identifier '%s'", tok)
             name = tok
             ti()
@@ -2587,7 +2640,7 @@ local function parseDeclarations(options, globals, tokens, ...)
             ti()
             local p = specifierTable[tok] or isTypeName(tok) or isAttribute(tok) or tok == ')'
             if abstract and p then
-               ty = parsePrototype(ty,symtable,context,abstract)
+               ty = parsePrototype(ty,symtable,context,abstract,extra.linkage)
             else
                attr = collectAttributes(attr)
                ty = parseRev()
@@ -2599,7 +2652,7 @@ local function parseDeclarations(options, globals, tokens, ...)
          attr = collectAttributes(attr)
          while tok == '(' or tok == '[' and ti(1) ~= '[' do
             if tok == '(' then ti()
-               ty = parsePrototype(ty,symtable,context,abstract)
+               ty = parsePrototype(ty,symtable,context,abstract,extra.linkage)
                check(")") ti()
                ty.attr = collectAttributes(ty.attr)
             elseif tok == '[' then -- array
@@ -2687,12 +2740,14 @@ local function parseDeclarations(options, globals, tokens, ...)
    end
 
    -- We are now ready to parse a declaration in the specified context
-   parseDeclaration = function(symtable, context)
+   parseDeclaration = function(symtable, context, linkage)
       -- parse declaration specifiers
       local where = n
       local lty, lextra = parseDeclarationSpecifiers(symtable,context,false)
+      lextra.linkage = lextra.linkage or linkage
       -- loop over declarators
-      if isName(tok) or tok=='*' or tok=='&' or tok == '^' or tok=='(' or tok=='[' then
+      if isName(tok) or tok=='*' or tok=='&' or tok == '^' or tok=='(' or tok=='['
+         or options.dialectCpp and tok=='operator' then
          -- parse declarator
          local name,ty,sclass = parseDeclarator(lty, lextra, symtable, context, false)
          -- first declarator may be a function definition
@@ -2700,14 +2755,14 @@ local function parseDeclarations(options, globals, tokens, ...)
             local body = skipPar({})
             xassert(sclass ~= 'typedef', options, where,
                     "storage class %s is not adequate for a function definition", sclass)
-            processDeclaration(where, symtable, context, name, ty, sclass, body)
+            processDeclaration(where, symtable, context, name, ty, sclass, body, lextra.linkage)
             return
          end
          -- process declarators
          while true do
             if typeIs(ty,'Function') then
                if not where then error() end
-               processDeclaration(where, symtable, context, name, ty, sclass)
+               processDeclaration(where, symtable, context, name, ty, sclass, nil, lextra.linkage)
             else
                local init
                if tok == '=' then
@@ -2715,7 +2770,7 @@ local function parseDeclarations(options, globals, tokens, ...)
                   ti()
                   init = skipTo({}, specifierTable, ';', ',')
                end
-               processDeclaration(where, symtable, context, name, ty, sclass, init)
+               processDeclaration(where, symtable, context, name, ty, sclass, init, lextra.linkage)
             end
             if tok ~= ',' then break else ti() end
             where = n
@@ -2728,7 +2783,7 @@ local function parseDeclarations(options, globals, tokens, ...)
       check(';') ti()
    end
 
-   parsePrototype = function(rty,symtable,context_,abstract_)
+   parsePrototype = function(rty,symtable,context_,abstract_,linkage)
       local nsymtable = newScope(symtable)
       local ty = Function{t=rty}
       local i=0
@@ -2739,6 +2794,7 @@ local function parseDeclarations(options, globals, tokens, ...)
             ti() check(')')
          else
             local lty, lextra = parseDeclarationSpecifiers(nsymtable, 'param', true)
+            lextra.linkage = lextra.linkage or linkage
             local pname, pty = parseDeclarator(lty, lextra, nsymtable, 'param', true)
             local sty = pty.tag == 'Qualified' and pty.t or pty
             if sty.tag == 'Type' and sty.n == 'void' then
@@ -2758,7 +2814,7 @@ local function parseDeclarations(options, globals, tokens, ...)
             end
          end
       end
-      if i == 0 and not options.dialectCpp then
+      if i == 0 and (not options.dialectCpp or linkage == "C") then
 	 ty.withoutProto = true end
       return ty
    end
@@ -3001,11 +3057,23 @@ local function parseDeclarations(options, globals, tokens, ...)
       return pty, pname
    else
       -- main loop
-      while tok do
+      local doglobal
+      doglobal = function(linkage)
          while tok == ';' do ti() end
          processMacroCaptures()
-         parseDeclaration(globals,"global")
+         if options.dialectCpp and tok=='extern' and ti(1)=='"C"' and ti(2)=='{' then
+            local ln = n
+            ti(); ti(); ti()
+            while tok and tok ~= '}' do doglobal("C") end
+            xassert(tok=='}',options,ln,"unterminated 'extern \"C\" {...}' construct")
+            ti()
+         else
+            parseDeclaration(globals,"global",linkage)
+         end
          processMacroCaptures()
+      end
+      while tok do
+         doglobal()
       end
       return globals
    end
