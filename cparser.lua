@@ -107,16 +107,31 @@ local function newTag(tag)
          if self[i] then seqlen=i else break end end
       for i=1,seqlen do
          s[1+#s] = str(self[i]) end
+      -- Collect and sort keys for deterministic output
+      local keys = {}
+      for k in pairs(self) do
+         if type(k) == 'string' and k ~= 'tag' then
+            keys[#keys+1] = k
+         end
+      end
+      table.sort(keys)
+      -- Process sorted string keys
+      for _, k in ipairs(keys) do
+         local v = self[k]
+         if k:find("^_") and type(v)=='table' then
+            s[1+#s] = string.format("%s={..}",k) -- hidden
+         else
+            s[1+#s] = string.format("%s=%s",k,str(v))
+         end
+      end
+      -- Process non-string keys
       for k,v in pairs(self) do
          if type(k) == 'number' then
             if k<1 or k>seqlen then
                s[1+#s] = string.format("[%s]=%s",k,str(v)) end
          elseif type(k) ~= 'string' then
             s.extra = true
-         elseif k:find("^_") and type(v)=='table' then
-            s[1+#s] = string.format("%s={..}",k) -- hidden
-         elseif k ~= 'tag' then
-            s[1+#s] = string.format("%s=%s",k,str(v)) end
+         end
       end
       if s.extra then s[1+#s] = "..." end
       return p .. table.concat(s,',') .. '}'

@@ -232,12 +232,16 @@ success, err = pcall(function()
             assert(#decl.type == 2, "Should have 2 methods")
 
             -- calculate(int, int)
-            assert(decl.type[1][1].pure == "0", "calculate should be pure virtual")
-            assert(#decl.type[1][1] == 2, "calculate should have 2 parameters")
+            local calcType = decl.type[1][1]
+            assert(calcType.pure == "0", "calculate should be pure virtual")
+            local calcFunc = cparser.unqualified(calcType)
+            assert(#calcFunc == 2, "calculate should have 2 parameters")
 
             -- compute(double, double, double)
-            assert(decl.type[2][1].pure == "0", "compute should be pure virtual")
-            assert(#decl.type[2][1] == 3, "compute should have 3 parameters")
+            local compType = decl.type[2][1]
+            assert(compType.pure == "0", "compute should be pure virtual")
+            local compFunc = cparser.unqualified(compType)
+            assert(#compFunc == 3, "compute should have 3 parameters")
 
             local str = cparser.typeToString(decl.type)
             print("  Type string:", str)
