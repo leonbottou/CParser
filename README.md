@@ -502,11 +502,67 @@ The following tags are used to represent types.
   type appears in function parameters and the base type is a pointer,
   a field named `static` may contain the guaranteed array size.
 
+  **C++:** In C++ mode, `Qualified{}` is also used to
+  represent class/struct members with additional member-specific fields:
+
+  - `memberof` - Contains the named type of which this type is a member.
+  - `static` - Set to true for static members (no implicit `this`)
+  - `virtual` - Set to the string `"virtual"` for virtual member functions
+  - `pure` - Contains `"0"`, `"default"`, or `"delete"` for pure virtual
+    or special member functions
+  - `constructor` - Set to true for constructor functions
+  - `destructor` - Set to true for destructor functions
+  - `const` - Set to the string `"const"` for const-qualified member
+    functions (the implicit `this` parameter is const)
+  - `volatile` - Set to the string `"volatile"` for volatile-qualified
+    member functions
+
+  For instance member functions, the underlying `Function{}` type contains
+  an explicit `this` parameter at index `[0]` as `Pair{Pointer{t=...}, "this"}`,
+  where the pointer type reflects the cv-qualifications (`const`/`volatile`).
+  This makes the type mechanically correct: the `this` parameter is explicit
+  in the function signature. Since Lua's `#` operator and `for i=1,#func`
+  loops start at index 1, they naturally skip the implicit parameter and
+  only count/iterate visible parameters.
+
+  Static member functions have NO index `[0]` parameter, but still have
+  the `Qualified{memberof=..., static=true}` wrapper to distinguish them
+  from free functions.
+
+  Example:
+  ```lua
+  -- const member function: int getX() const;
+  Qualified{
+    memberof=Type{n="Point",_def=Struct{...}},
+    const="const",
+    t=Function{
+      [0]=Pair{Pointer{t=Qualified{const="const",t=Type{n="Point",_def=Struct{...}}}},"this"},
+      t=Type{n="int"}
+    }
+  }
+
+  -- static member function: static void helper();
+  Qualified{
+    memberof=Type{n="Math",_def=Struct{...}},
+    static=true,
+    t=Function{t=Type{n="void"}}
+  }
+  ```
+
+  To access the underlying type of a member, unwrap the `Qualified{}` layer
+  by accessing its `.t` field (e.g., `member[1].t` gives the underlying type).
+
 * `Pointer{t=basetype}` is used to represent a pointer to an object of
   type `basetype`. This construct may also contains a field
   `block=true` to indicate that the pointer refers to a code block (a
   C extension found in Apple compilers) or a field `ref=true` to
   indicate a reference type (a C extension inspired by C++.)
+
+  **C++:** For pointer-to-member types (e.g., `int Class::*ptr`),
+  the `Pointer{}` construct contains an additional `memberof` field that
+  references the class. Use the idiom `Pointer{t=type, memberof=type.memberof}`
+  to create pointers that preserve member context. Note that parsing of the
+  `Class::*` syntax is not yet implemented.
 
 * `Array{t=basetype,size=s}` is used to represent an array of object
   of type `basetype`. The optional field `size` contains the array
@@ -526,6 +582,12 @@ The following tags are used to represent types.
   bitfield size for the structure entry.  Field `bitfield` usually
   contains a small integer but can also contain a string representing
   a C expression (just like field `size` in the `Array{}` construct.)
+
+  **C++:** In C++ mode (`-std=c++11`), all class/struct member types
+  are wrapped in `Qualified{}` to store member-specific information. To access
+  the underlying type, use `member[1].t`. For example, to check if a member is
+  a function: `member[1].t.tag == 'Function'`. See the `Qualified{}` documentation
+  above for details on member-specific fields.
   
 * `Enum{}` is used to represent an enumerated type. The optional
   field `n` may contain the enumeration tag name. The enumeration
@@ -561,7 +623,7 @@ Example
 ```Lua
       > return cparser.stringToType("int(*)(const char*)")
       Pointer{t=Function{Pair{Pointer{t=Qualified{const=true,t=Type{n="char"}}}},t=Type{n="int"}}}	nil
-```      
+```
 
 
 

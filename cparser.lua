@@ -1751,17 +1751,19 @@ local Function = newTag('Function')
 
 -- This function creates a qualified variant of a type.
 
-local function addQualifier(ty, q, val)
-   assert(q=='const' or q=='volatile' or q=='restrict' or q=='linkage')
-   if ty.Tag ~= 'Qualified' then ty = Qualified{t=ty} end
-   ty[q] = val or true
-   return ty
+local function unqualified(ty)
+   if ty and ty.tag == 'Qualified' then
+      return ty.t
+   else
+      return ty
+   end
 end
 
-local function typeIs(ty,tag)
-   assert(ty)
-   if ty.tag == 'Qualified' then ty = ty.t end
-   return ty.tag == tag and ty
+local function qualified(ty, attrs)
+   if not attrs or not next(attrs) then return ty end
+   if ty.tag ~= 'Qualified' then ty=Qualified{t=ty} end
+   for k, v in pairs(attrs) do ty[k] = v end
+   return ty
 end
 
 -- This function compares two types. When optional argument <oki> is
@@ -1787,6 +1789,16 @@ local function compareTypes(t1, t2, oki)
          if t1.const ~= t2.const then return false end
          if t1.volatile ~= t2.volatile then return false end
          if t1.restrict ~= t2.restrict then return false end
+         -- Compare member context if present
+         if t1.memberof or t2.memberof then
+            if not compareTypes(t1.memberof, t2.memberof, false) then
+               return false
+            end
+            -- Member qualifiers must match
+            if t1.static ~= t2.static then return false end
+            if t1.virtual ~= t2.virtual then return false end
+            if t1.pure ~= t2.pure then return false end
+         end
          if oki==1 then t1.attr=tableAppend(t1.attr,t2.attr) end
          return compareTypes(t1.t, t2.t, oki)
       end
@@ -1795,6 +1807,12 @@ local function compareTypes(t1, t2, oki)
    elseif t1.tag == 'Pointer' then
       if t1.block ~= t2.block then return false end
       if t1.ref ~= t2.ref then return false end
+      -- Compare memberof for pointer-to-member
+      if t1.memberof or t2.memberof then
+         if not compareTypes(t1.memberof, t2.memberof, false) then
+            return false
+         end
+      end
       return compareTypes(t1.t, t2.t, oki)
    elseif t1.tag == 'Array' then
       if compareTypes(t1.t, t2.t, oki) then
@@ -1969,12 +1987,18 @@ local function typeToString(ty, nam)
 	    end
 	    local mtype = member[1]
 	    local mstr = typeToString(mtype, member[2] or "")
-	    local ftype = typeIs(mtype, 'Function')
-	    if ftype and ftype.virtual then
-	       mstr = 'virtual ' .. mstr end
+	    -- Check Qualified wrapper for member-specific attributes
+	    if mtype.tag == 'Qualified' then
+	       if mtype.static then
+	          mstr = 'static ' .. mstr
+	       end
+	       if mtype.virtual then
+	          mstr = 'virtual ' .. mstr
+	       end
+	    end
 	    s = s .. ' ' .. mstr
-	    if ftype and ftype.pure then
-	       s = s .. ' = ' .. ftype.pure
+	    if mtype.tag == 'Qualified' and mtype.pure then
+	       s = s .. ' = ' .. mtype.pure
 	    end
 	    if member.bitfield then
 	       s = s .. ':' .. tostring(member.bitfield) end
@@ -2031,7 +2055,7 @@ local function declToString(action)
       end
       if action.intval then
          s = s .. ' = ' .. action.intval
-      elseif action.init and typeIs(action.type, 'Function') then
+      elseif action.init and unqualified(action.type).tag == 'Function' then
          s = s .. "{..}"
       elseif action.init then
          s = s .. "=.."
@@ -2344,7 +2368,7 @@ local function parseDeclarations(options, globals, tokens, ...)
          return
       end
       -- handle variable and constants
-      if typeIs(ty, 'Function') then
+      if unqualified(ty).tag == 'Function' then
          if init then
             dcl = Definition{name=name,type=ty,sclass=sclass,where=where,init=init}
          else
@@ -2369,7 +2393,7 @@ local function parseDeclarations(options, globals, tokens, ...)
       end
       -- handle linkage specification
       if linkage and sclass ~= 'static' and sclass ~= '[enum]' then
-         ty = addQualifier(ty, 'linkage', linkage)
+         ty = qualified(ty, {linkage = linkage})
          dcl.type = ty
       end
       -- check for duplicate declaration
@@ -2397,16 +2421,16 @@ local function parseDeclarations(options, globals, tokens, ...)
 	 end
 	 -- If trying to create C++ overload but existing has C linkage, error
 	 if options.dialectCpp and not hasCLinkage(dcl.type) and odcl and samescope
-	    and typeIs(dcl.type,'Function') and hasCLinkage(odcl.type) then
+	    and unqualified(dcl.type).tag == 'Function' and hasCLinkage(odcl.type) then
 	    xerror(options, where,
 		   "cannot add C++ overload for '%s' with existing C linkage declaration at %s",
 		   name, odcl.where)
 	 end
 	 -- No overloading if C linkage
 	 if options.dialectCpp and not hasCLinkage(dcl.type) and odcl and samescope then
-	    if typeIs(dcl.type,'Function') and odcl.tag ~= 'Pair' then
+	    if unqualified(dcl.type).tag == 'Function' and odcl.tag ~= 'Pair' then
 	       odcl = Pair{odcl} symtable[name] = odcl end
-	    if typeIs(dcl.type,'Function') then
+	    if unqualified(dcl.type).tag == 'Function' then
 	       odcl, dcltable, dclindex = searchOverload(odcl)
 	    elseif odcl.tag == 'Pair' then
 	       odcl, dcltable, dclindex = odcl[1], odcl, 1 -- for error
@@ -2576,8 +2600,7 @@ local function parseDeclarations(options, globals, tokens, ...)
       end
       -- return
       if not ty then ty = namedType(globals, nn.type) end
-      if nn.const then ty = addQualifier(ty, 'const') end
-      if nn.volatile then ty = addQualifier(ty, 'volatile') end
+      ty = qualified(ty, {const = nn.const, volatile = nn.volatile})
       xassert(not nn.restrict, options, n,
               "qualifier '%s' is not adequate here", nn.restrict)
       return ty, nn
@@ -2622,19 +2645,19 @@ local function parseDeclarations(options, globals, tokens, ...)
             local block = tok == '^' or nil -- code blocks (apple)
             local ref = tok == '&' or nil   -- reference type
             ti()
-            local nt, pt
+            local quals, pt
             while tok=='const' or tok=='volatile'
             or specifierTable[tok]=='restrict' or isAttribute(tok) do
-               nt = nt or Qualified{}
+               quals = quals or {}
                if isAttribute(tok) then
-                  nt.attr = collectAttributes(nt.attr)
+                  quals.attr = collectAttributes(quals.attr)
                else
-                  nt[specifierTable[tok]] = true
+                  quals[specifierTable[tok]] = true
                   ti()
                end
             end
             pt = parseRev()
-            if nt then nt.t = pt; pt = nt; end
+            pt = qualified(pt, quals)
             ty = Pointer{t=pt, block=block, ref=ref}
          elseif tok == '(' then
             ti()
@@ -2654,20 +2677,31 @@ local function parseDeclarations(options, globals, tokens, ...)
             if tok == '(' then ti()
                ty = parsePrototype(ty,symtable,context,abstract,extra.linkage)
                check(")") ti()
+               -- Parse cv-qualifiers for member functions (C++)
+               if options.dialectCpp and context == 'member' then
+                  if tok == 'const' then
+                     extra.const = true
+                     ti()
+                  end
+                  if tok == 'volatile' then
+                     extra.volatile = true
+                     ti()
+                  end
+               end
                ty.attr = collectAttributes(ty.attr)
             elseif tok == '[' then -- array
                ti()
                xassert(ty==nil or ty.tag ~= 'Function', options,n,
                        "functions cannot return arrays (they can return pointers)")
-               local nt = nil
+               local quals = nil
                while specifierTable[tok] =='restrict' or tok == 'const'
                or tok == 'volatile' or options.dialect99 and tok == 'static' do
                   xassert(ty==nil or ty.tag~='Array', options, n,
                           "only the outer array indices can contain qualifiers")
                   xassert(tok~='static' or context=='param', options, n,
                           "static array qualifiers are only permitted in prototypes")
-                  nt = nt or Qualified{}
-                  nt[specifierTable[tok]] = true
+                  quals = quals or {}
+                  quals[specifierTable[tok]] = true
                   ti()
                end
                if tok == ']' then
@@ -2685,15 +2719,12 @@ local function parseDeclarations(options, globals, tokens, ...)
                   check(']') ti()
                   ty = Array{t=ty, size=v}
                end
-               if nt then
-                  if nt.sclass then
-                     xassert(ty.size, options, n, "static in this context needs an array size")
-                     nt.static = ty.size
-                     nt.sclass = nil
-                  end
-                  nt.t = ty.t
-                  ty.t = nt
+               if quals and quals.sclass then
+                  xassert(ty.size, options, n, "static in this context needs an array size")
+                  quals.static = ty.size
+                  quals.sclass = nil
                end
+               ty.t = qualified(ty.t, quals)
             end
          end
          return ty
@@ -2719,19 +2750,14 @@ local function parseDeclarations(options, globals, tokens, ...)
          xassert(tt, options, where, "only functions can be declared inline")
          tt.inline = true
       end
-      if extra.virtual then
-         local tt = ty
-         while tt and tt.tag ~= 'Function' do tt=tt.t end
-         xassert(tt, options, where, "only functions can be declared virtual")
-         tt.virtual = true
-      end
+      -- Note: virtual is now handled in parseStruct for member functions
       attr = tableAppend(extra.attr, attr)
       if attr then
          local tt = ty
          while tt.tag == 'Pointer' do tt=tt.t end
          if tt.tag ~= 'Function' and tt.tag ~= 'Struct' and tt.tag ~= 'Union' then tt = nil end
          if tt == nil and ty == 'Qualified' then tt = ty end
-         if tt == nil then ty=Qualified{t=ty} tt=ty end
+         if tt == nil then ty=qualified(ty, {attr=attr}) tt=ty end
          if tt then tt.attr = attr end
       end
       -- return
@@ -2751,7 +2777,7 @@ local function parseDeclarations(options, globals, tokens, ...)
          -- parse declarator
          local name,ty,sclass = parseDeclarator(lty, lextra, symtable, context, false)
          -- first declarator may be a function definition
-         if context == 'global' and name and typeIs(ty,'Function') and tok == '{' then
+         if context == 'global' and name and unqualified(ty).tag == 'Function' and tok == '{' then
             local body = skipPar({})
             xassert(sclass ~= 'typedef', options, where,
                     "storage class %s is not adequate for a function definition", sclass)
@@ -2760,7 +2786,7 @@ local function parseDeclarations(options, globals, tokens, ...)
          end
          -- process declarators
          while true do
-            if typeIs(ty,'Function') then
+            if unqualified(ty).tag == 'Function' then
                if not where then error() end
                processDeclaration(where, symtable, context, name, ty, sclass, nil, lextra.linkage)
             else
@@ -2837,8 +2863,9 @@ local function parseDeclarations(options, globals, tokens, ...)
       end
       local where = n
       local access = nil
+      local nty = nil  -- Named type reference for memberof
       if options.dialectCpp then
-	 local nty = namedType(symtable, ty.n)
+	 nty = namedType(symtable, ty.n)
 	 nty._def = ty
 	 access = (kind == 'class') and 'private' or 'public'
 	 if tok == ':' then -- c++ inheritance
@@ -2885,8 +2912,7 @@ local function parseDeclarations(options, globals, tokens, ...)
 	    lty = namedType(symtable, 'void')
 	 else
             lty, lextra = parseDeclarationSpecifiers(symtable, context)
-            xassert(lextra.sclass == nil, options, where,
-                    "storage class '%s' is not allowed here", lextra.sclass)
+            -- Allow storage class for members in C++ (static)
 	 end
 	 -- Parse declarators
          if tok == ';' then -- anonymous member
@@ -2906,10 +2932,10 @@ local function parseDeclarations(options, globals, tokens, ...)
                   local pair = Pair{lty,bitfield=v,access=access}
                   ty[1+#ty] = pair
                else
-                  local pname, pty = parseDeclarator(lty, lextra, symtable, context)
+                  local pname, pty = parseDeclarator(lty, lextra, symtable, 'member')
                   if pty.tag == 'Array' and not pty.size then
                      xwarning(options, where, "unsized arrays are not allowed here (ignoring)")
-                  elseif pty.tag == 'Function' then
+                  elseif unqualified(pty).tag == 'Function' then
                      if not options.dialectCpp then
                         xerror(options, where, "member functions are not allowed in C") end
 		     if tok == '{' then
@@ -2919,20 +2945,34 @@ local function parseDeclarations(options, globals, tokens, ...)
                      elseif tok == '=' then
 			ti()
 			if tok == '0' or tok == 'default' or tok == 'delete' then
-			   pty.pure=tok ti()
+			   lextra.pure=tok ti()
 			else
 			   xerror(options, where, "expected 0, default, or delete after '='")
 			end
                      end
 		     if lextra.destructor then
 			pname = '~' .. pname
-			pty.destructor = true
-			pty.virtual = lextra.virtual
+			lextra.destructor = true
 		     end
 		     if lextra.constructor then
-			pty.constructor = true
+			lextra.constructor = true
+		     end
+		     -- Add 'this' parameter for non-static member functions
+		     local funcType = unqualified(pty)
+		     if not (lextra.sclass == 'static') then
+		        local thisType = qualified(nty, {const = lextra.const, volatile = lextra.volatile})
+		        funcType[0] = Pair{Pointer{t=thisType}, "this"}
 		     end
                   end
+		  -- Wrap member in Qualified
+		  local memberType = qualified(pty, { memberof = nty,
+						      static = (lextra.sclass == 'static') or nil,
+						      virtual = lextra.virtual and true,
+						      pure = lextra.pure,
+						      constructor = lextra.constructor,
+						      destructor = lextra.destructor,
+						      const = lextra.const,
+						      volatile = lextra.volatile })
                   if tok == ':' then ti()
                      xassert(lty == pty, options, where, "bitfields must be of integral types")
                      local size = skipTo({},',',';')
@@ -2941,9 +2981,9 @@ local function parseDeclarations(options, globals, tokens, ...)
                              "syntax error in bitfield specification")
                      xassert(type(v)~='number' or v>0, options, where,
                              "invalid bitfield size (%s)", v)
-                     ty[1+#ty] = Pair{pty,pname,bitfield=v,access=access}
+                     ty[1+#ty] = Pair{memberType,pname,bitfield=v,access=access}
                   else
-                     ty[1+#ty] = Pair{pty,pname,access=access}
+                     ty[1+#ty] = Pair{memberType,pname,access=access}
                   end
                end
                check(',',';')
@@ -2983,7 +3023,7 @@ local function parseDeclarations(options, globals, tokens, ...)
       local i = 1
       local v,a = 0,0
       local ty = Enum{n=ttag}
-      local ity = Qualified{t=namedType(globals, "int"),const=true,_enum=ty}
+      local ity = qualified(namedType(globals, "int"), {const=true, _enum=ty})
       local where = n
       if options.dialectCpp then
 	 local nty = namedType(symtable, ty.n)
@@ -3195,5 +3235,6 @@ cparser.declarationIterator = declarationIterator
 cparser.typeToString = typeToString
 cparser.stringToType = stringToType
 cparser.declToString = declToString
+cparser.unqualified = unqualified
 
 return cparser

@@ -24,7 +24,7 @@ local success, err = pcall(function()
             count = #decl.type
             print("  Members found:", count)
             for i, member in ipairs(decl.type) do
-                print(string.format("    [%d] %s: %s", i, member[2] or "?", member[1].tag or "?"))
+                print(string.format("    [%d] %s: %s", i, member[2] or "?", cparser.unqualified(member[1]).tag or "?"))
             end
         end
     end
@@ -97,7 +97,7 @@ success, err = pcall(function()
             count = #decl.type
             print("  Members found:", count)
             for i, member in ipairs(decl.type) do
-                print(string.format("    [%d] %s: %s", i, member[2] or "?", member[1].tag or "?"))
+                print(string.format("    [%d] %s: %s", i, member[2] or "?", cparser.unqualified(member[1]).tag or "?"))
             end
         end
     end

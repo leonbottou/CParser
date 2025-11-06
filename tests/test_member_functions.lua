@@ -34,8 +34,9 @@ local success, err = pcall(function()
             for i, member in ipairs(decl.type) do
                 local mtype = member[1]
                 local mname = member[2]
-                print(string.format("    [%d] %s: %s", i, mname or "(unnamed)", mtype.tag or "?"))
-                if mtype.tag == 'Function' then
+                local underlyingType = cparser.unqualified(mtype)
+                print(string.format("    [%d] %s: %s", i, mname or "(unnamed)", underlyingType.tag or "?"))
+                if underlyingType.tag == 'Function' then
                     print("         ^ This is a member function!")
                 end
             end

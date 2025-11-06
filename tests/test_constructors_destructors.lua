@@ -26,7 +26,8 @@ local success, err = pcall(function()
             print("  Members:")
             for i, member in ipairs(decl.type) do
                 local name = member[2] or "?"
-                local mtype = member[1].tag or "?"
+                local underlyingType = cparser.unqualified(member[1])
+                local mtype = underlyingType.tag or "?"
                 local special = ""
                 if member[1].constructor then
                     special = " [CONSTRUCTOR]"
@@ -64,9 +65,10 @@ success, err = pcall(function()
         if decl.type and decl.type.tag == 'Struct' then
             print("  Constructor:", decl.type[1][2])
             print("  Is constructor:", decl.type[1][1].constructor or false)
-            print("  Type:", decl.type[1][1].tag)
+            local underlyingType = cparser.unqualified(decl.type[1][1])
+            print("  Type:", underlyingType.tag)
             assert(decl.type[1][1].constructor == true, "Should be constructor")
-            assert(decl.type[1][1].tag == 'Function', "Should be function type")
+            assert(underlyingType.tag == 'Function', "Should be function type")
         end
     end
 end)

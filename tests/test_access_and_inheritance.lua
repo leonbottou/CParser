@@ -30,7 +30,7 @@ local success, err = pcall(function()
             for i, member in ipairs(decl.type) do
                 local access = member.access or "?"
                 local name = member[2] or "(unnamed)"
-                local mtype = member[1].tag or "?"
+                local mtype = cparser.unqualified(member[1]).tag or "?"
                 print(string.format("    [%d] %s %s: %s", i, access, name, mtype))
             end
             -- Verify access levels

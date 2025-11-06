@@ -20,8 +20,8 @@ local success, err = pcall(function()
     local di = cparser.declarationIterator({"-std=c++11"}, code1:gmatch("[^\n]+"), "test.cpp")
     for decl in di do
         if decl.type and decl.type.tag == 'Struct' then
-            local mtype = decl.type[1][1]
-            assert(mtype.virtual == true, "foo() should be virtual")
+            local qualType = decl.type[1][1]  -- Qualified wrapper
+            assert(qualType.virtual, "foo() should be virtual")
             local str = cparser.typeToString(decl.type)
             assert(str:find("virtual void foo"), "typeToString should show virtual")
             print("  Type string:", str)
@@ -43,9 +43,9 @@ success, err = pcall(function()
     local di = cparser.declarationIterator({"-std=c++11"}, code2:gmatch("[^\n]+"), "test.cpp")
     for decl in di do
         if decl.type and decl.type.tag == 'Struct' then
-            local mtype = decl.type[1][1]
-            assert(mtype.virtual == true, "~Base() should be virtual")
-            assert(mtype.destructor == true, "Should be marked as destructor")
+            local qualType = decl.type[1][1]  -- Qualified wrapper
+            assert(qualType.virtual, "~Base() should be virtual")
+            assert(qualType.destructor, "Should be marked as destructor")
             local str = cparser.typeToString(decl.type)
             assert(str:find("virtual") and str:find("~Base"), "typeToString should show virtual destructor")
             print("  Type string:", str)
@@ -69,12 +69,12 @@ success, err = pcall(function()
     local di = cparser.declarationIterator({"-std=c++11"}, code3:gmatch("[^\n]+"), "test.cpp")
     for decl in di do
         if decl.type and decl.type.tag == 'Struct' then
-            assert(decl.type[1][1].virtual == true, "draw() should be virtual")
+            assert(decl.type[1][1].virtual, "draw() should be virtual")
             assert(decl.type[1][2] == "draw", "First member should be draw")
-            assert(decl.type[2][1].virtual == nil, "move() should not be virtual")
+            assert(not decl.type[2][1].virtual, "move() should not be virtual")
             assert(decl.type[2][2] == "move", "Second member should be move")
-            assert(decl.type[3][1].virtual == true, "~Shape() should be virtual")
-            assert(decl.type[3][1].destructor == true, "Third should be destructor")
+            assert(decl.type[3][1].virtual, "~Shape() should be virtual")
+            assert(decl.type[3][1].destructor, "Third should be destructor")
             local str = cparser.typeToString(decl.type)
             print("  Type string:", str)
             assert(str:find("virtual void draw"), "Should show virtual draw()")
@@ -98,7 +98,7 @@ success, err = pcall(function()
     local di = cparser.declarationIterator({"-std=c++11"}, code4:gmatch("[^\n]+"), "test.cpp")
     for decl in di do
         if decl.type and decl.type.tag == 'Struct' then
-            assert(decl.type[1][1].virtual == true, "foo() should be virtual")
+            assert(decl.type[1][1].virtual, "foo() should be virtual")
             print("  Type string:", cparser.typeToString(decl.type))
         end
     end
