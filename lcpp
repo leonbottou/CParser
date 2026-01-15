@@ -23,7 +23,7 @@ io = require 'io'
 
 local function die(s,...)
    if s then print(string.format(s,...)) end
-   error(nil)
+   os.exit(false)
 end   
 
 local function usage()

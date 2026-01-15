@@ -507,15 +507,15 @@ The following tags are used to represent types.
 
   - `memberof` - Contains the named type of which this type is a member.
   - `static` - Set to true for static members (no implicit `this`)
-  - `virtual` - Set to the string `"virtual"` for virtual member functions
+  - `virtual` - Set to true for virtual member functions
   - `pure` - Contains `"0"`, `"default"`, or `"delete"` for pure virtual
     or special member functions
   - `constructor` - Set to true for constructor functions
   - `destructor` - Set to true for destructor functions
-  - `const` - Set to the string `"const"` for const-qualified member
+  - `const` - Set to true for const-qualified member
     functions (the implicit `this` parameter is const)
-  - `volatile` - Set to the string `"volatile"` for volatile-qualified
-    member functions
+  - `volatile` - Set to true for volatile-qualified
+    member functions  (the implicit `this` parameter is volatile)
 
   For instance member functions, the underlying `Function{}` type contains
   an explicit `this` parameter at index `[0]` as `Pair{Pointer{t=...}, "this"}`,
