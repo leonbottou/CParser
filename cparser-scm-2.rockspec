@@ -4,10 +4,10 @@
 
 
 package = 'cparser'
-version = 'scm-1'
+version = 'scm-2'
 source  = {
-    url    = 'git://github.com/facebookresearch/cparser',
-    tag    = 'scm-1'
+    url    = 'git@github.com:leonbottou/CParser.git',
+    tag    = 'release-1.2'
 }
 description = {
     summary  = 'A compact C preprocessor and declaration parser written in pure Lua',
