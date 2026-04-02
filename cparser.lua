@@ -432,7 +432,8 @@ end
 
 local function joinLines(options, lines, ...)
    local li = wrap(options, lines, ...)
-   for s, n in li do
+   for s_line, n in li do
+      local s = s_line
       while type(s) == 'string' and s:find("\\%s*$") do
          local t = li() or ""
          s = s:gsub("\\%s*$", "") .. t
